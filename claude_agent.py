@@ -8,7 +8,7 @@ import json
 import httpx
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-4-5"
 
 SYSTEM_PROMPT = """You are Dia — a cool, caring older sister figure for teenagers with diabetes.
 You're like that older cousin or big sister who's fun, real, and always has your back.
