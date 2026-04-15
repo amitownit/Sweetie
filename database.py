@@ -1,5 +1,6 @@
 """
 Database module - saves logs to Supabase and retrieves conversation history
+Includes user profile support (name, preferred glucose unit)
 """
 
 import os
@@ -18,10 +19,76 @@ HEADERS = {
 }
 
 
-def save_log(phone: str, user_message: str, bot_reply: str, extracted: dict | None):
-    """Save a conversation turn + any extracted health data to Supabase."""
+def is_new_user(phone: str) -> bool:
+    """Returns True if this phone number has never messaged before."""
     if not SUPABASE_URL or not SUPABASE_KEY:
-        print("⚠️  Supabase not configured — skipping database save")
+        return False
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(
+                f"{SUPABASE_URL}/rest/v1/diabetes_logs",
+                headers={**HEADERS, "Prefer": ""},
+                params={
+                    "phone": f"eq.{phone}",
+                    "limit": "1",
+                    "select": "id",
+                },
+            )
+            if resp.status_code == 200:
+                return len(resp.json()) == 0
+    except Exception as e:
+        print(f"❌ is_new_user error: {e}")
+    return False
+
+
+def save_user_profile(phone: str, updates: dict):
+    """
+    Save or update user profile info (name, preferred glucose unit).
+    Uses upsert so it creates or updates.
+    """
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+
+    payload = {"phone": phone, **updates}
+
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.post(
+                f"{SUPABASE_URL}/rest/v1/user_profiles",
+                headers={**HEADERS, "Prefer": "resolution=merge-duplicates"},
+                json=payload,
+            )
+            if resp.status_code not in (200, 201):
+                print(f"⚠️ Profile save failed: {resp.status_code} {resp.text}")
+            else:
+                print(f"✅ Profile updated for {phone}: {updates}")
+    except Exception as e:
+        print(f"❌ Profile save error: {e}")
+
+
+def get_user_profile(phone: str) -> dict:
+    """Get user profile (name, preferred unit) if it exists."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return {}
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(
+                f"{SUPABASE_URL}/rest/v1/user_profiles",
+                headers={**HEADERS, "Prefer": ""},
+                params={"phone": f"eq.{phone}", "select": "*"},
+            )
+            if resp.status_code == 200:
+                rows = resp.json()
+                return rows[0] if rows else {}
+    except Exception as e:
+        print(f"❌ Profile fetch error: {e}")
+    return {}
+
+
+def save_log(phone: str, user_message: str, bot_reply: str, extracted: dict | None):
+    """Save a conversation turn + extracted health data to Supabase."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("⚠️  Supabase not configured — skipping save")
         return
 
     payload = {
@@ -29,7 +96,6 @@ def save_log(phone: str, user_message: str, bot_reply: str, extracted: dict | No
         "user_message": user_message,
         "bot_reply": bot_reply,
         "timestamp": datetime.utcnow().isoformat(),
-        # Extracted health fields (can be null)
         "glucose": extracted.get("glucose") if extracted else None,
         "glucose_unit": extracted.get("glucose_unit") if extracted else None,
         "meal": extracted.get("meal") if extracted else None,
@@ -47,7 +113,7 @@ def save_log(phone: str, user_message: str, bot_reply: str, extracted: dict | No
                 json=payload,
             )
             if resp.status_code not in (200, 201):
-                print(f"⚠️  Supabase save failed: {resp.status_code} {resp.text}")
+                print(f"⚠️  Log save failed: {resp.status_code} {resp.text}")
             else:
                 print(f"✅ Log saved for {phone}")
     except Exception as e:
@@ -56,7 +122,7 @@ def save_log(phone: str, user_message: str, bot_reply: str, extracted: dict | No
 
 def get_user_history(phone: str, limit: int = 10) -> list:
     """
-    Retrieve recent conversation history for a user.
+    Retrieve recent conversation history for context.
     Returns list of {"role": "user"|"assistant", "content": "..."} dicts.
     """
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -77,15 +143,11 @@ def get_user_history(phone: str, limit: int = 10) -> list:
             if resp.status_code != 200:
                 return []
 
-            rows = resp.json()
-            # Reverse so oldest is first (correct order for Claude context)
-            rows = list(reversed(rows))
-
+            rows = list(reversed(resp.json()))
             history = []
             for row in rows:
                 history.append({"role": "user", "content": row["user_message"]})
                 history.append({"role": "assistant", "content": row["bot_reply"]})
-
             return history
 
     except Exception as e:
